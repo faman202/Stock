@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DSE Ultimate Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-slate-900 text-white p-4">
+
+<h1 class="text-2xl font-bold mb-4">🚀 DSE Ultimate Dashboard</h1>
+
+<div class="flex flex-wrap gap-2 mb-4">
+  <button onclick="loadData()" class="bg-blue-500 px-4 py-2 rounded">🔄 Refresh</button>
+  <button onclick="exportCSV()" class="bg-green-500 px-4 py-2 rounded">📥 CSV</button>
+</div>
+
+<input id="search" oninput="render()" placeholder="Search..." class="mb-3 p-2 rounded bg-slate-800 w-full">
+
+<!-- Table -->
+<table class="w-full border mb-6">
+<thead>
+<tr class="bg-slate-700">
+<th>Symbol</th>
+<th>Price</th>
+<th>Change%</th>
+<th>Volume</th>
+<th>Add</th>
+</tr>
+</thead>
+<tbody id="table"></tbody>
+</table>
+
+<!-- Portfolio -->
+<h2 class="text-xl mb-2">💼 Portfolio</h2>
+<table class="w-full border mb-6">
+<thead class="bg-slate-700">
+<tr>
+<th>Symbol</th>
+<th>Qty</th>
+<th>Buy</th>
+<th>Now</th>
+<th>P/L</th>
+</tr>
+</thead>
+<tbody id="portfolio"></tbody>
+</table>
+
+<!-- Chart -->
+<h2 class="text-xl mb-2">📊 Chart</h2>
+<canvas id="chart"></canvas>
+
+<script>
+let allStocks = [];
+let portfolio = [];
+let chart;
+
+async function fetchRealData(){
+  try{
+    let r = await fetch("https://bd-stock-api.vercel.app/api/dse");
+    let d = await r.json();
+    if(Array.isArray(d)) return d;
+  }catch(e){}
+  return [];
+}
+
+function mapData(d){
+  return d.map(x=>({
+symbol:x.symbol||x.code,
+price:+(x.price||x.ltp||0),
+change:+(x.percent_change||x.change_percent||0),
+volume:+(x.volume||0)
+}));
+}
+
+function render(){
+  let s=document.getElementById("search").value.toLowerCase();
+  let t=document.getElementById("table");
+  let f=allStocks.filter(x=>x.symbol.toLowerCase().includes(s));
+
+  t.innerHTML=f.map(x=>`
+  <tr>
+    <td>${x.symbol}</td>
+    <td>${x.price}</td>
+    <td class="${x.change>0?'text-green-400':'text-red-400'}">${x.change}%</td>
+    <td>${x.volume}</td>
+    <td><button onclick="add('${x.symbol}',${x.price})">+</button></td>
+  </tr>`).join('');
+
+  updateChart(f.slice(0,10));
+}
+
+function add(sym,price){
+  let qty=prompt("Qty?");
+  if(!qty) return;
+  portfolio.push({sym,qty:+qty,buy:price});
+  renderPortfolio();
+}
+
+function renderPortfolio(){
+  let t=document.getElementById("portfolio");
+  t.innerHTML=portfolio.map(p=>{
+    let s=allStocks.find(x=>x.symbol===p.sym);
+    let now=s?s.price:p.buy;
+    let pl=(now-p.buy)*p.qty;
+    return `<tr>
+      <td>${p.sym}</td>
+      <td>${p.qty}</td>
+      <td>${p.buy}</td>
+      <td>${now}</td>
+      <td class="${pl>0?'text-green-400':'text-red-400'}">${pl.toFixed(2)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function updateChart(data){
+  let ctx=document.getElementById('chart');
+  let labels=data.map(x=>x.symbol);
+  let prices=data.map(x=>x.price);
+
+  if(chart) chart.destroy();
+
+  chart=new Chart(ctx,{
+    type:'bar',
+    data:{labels,datasets:[{label:'Price',data:prices}]}
+  });
+}
+
+async function loadData(){
+  let d=await fetchRealData();
+  allStocks=mapData(d);
+  render();
+}
+
+function exportCSV(){
+  let csv="Symbol,Price,Change,Volume\n";
+  allStocks.forEach(s=>csv+=`${s.symbol},${s.price},${s.change},${s.volume}\n`);
+  let b=new Blob([csv]);
+  let a=document.createElement('a');
+  a.href=URL.createObjectURL(b);
+  a.download='report.csv';
+  a.click();
+}
+
+loadData();
+setInterval(loadData,30000);
+</script>
+
+</body>
+</html>
