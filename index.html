@@ -60,8 +60,8 @@ select.input-field{appearance:none;background-image:url("data:image/svg+xml,%3Cs
        </div>
       </div>
      </div>
-     <div class="flex items-center gap-2">
-      <button onclick="exportCSV()" class="btn-primary flex items-center gap-1 text-sm"><i data-lucide="download" style="width:14px;height:14px"></i> CSV রিপোর্ট</button> <button onclick="exportFullReport()" class="btn-primary flex items-center gap-1 text-sm" style="background:linear-gradient(135deg,#8b5cf6,#7c3aed)"><i data-lucide="file-text" style="width:14px;height:14px"></i> পূর্ণ রিপোর্ট</button>
+     <div class="flex items-center gap-2 flex-wrap">
+      <button onclick="document.getElementById('csv-upload-input').click()" class="btn-primary flex items-center gap-1 text-sm" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><i data-lucide="upload" style="width:14px;height:14px"></i> আপলোড ডেটা</button> <input type="file" id="csv-upload-input" accept=".csv" style="display:none" onchange="handleCSVUpload(event)"> <button onclick="exportCSV()" class="btn-primary flex items-center gap-1 text-sm"><i data-lucide="download" style="width:14px;height:14px"></i> CSV রিপোর্ট</button> <button onclick="exportFullReport()" class="btn-primary flex items-center gap-1 text-sm" style="background:linear-gradient(135deg,#8b5cf6,#7c3aed)"><i data-lucide="file-text" style="width:14px;height:14px"></i> পূর্ণ রিপোর্ট</button>
      </div>
     </div>
    </header><!-- Ticker -->
@@ -368,6 +368,135 @@ const CUSTOM_API_CONFIG = {
   })
 };
 
+// ===== CSV UPLOAD HANDLER =====
+function handleCSVUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const csv = e.target.result;
+      const lines = csv.trim().split('\n');
+      
+      if (lines.length < 2) {
+        showToast('CSV ফাইলে হেডার এবং অন্তত ১টি ডেটা রো থাকতে হবে', 'error');
+        return;
+      }
+      
+      // Parse header
+      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+      
+      // Required columns
+      const requiredCols = ['symbol', 'name', 'sector', 'price', 'change'];
+      const missingCols = requiredCols.filter(col => !headers.includes(col));
+      
+      if (missingCols.length > 0) {
+        showToast(`প্রয়োজনীয় কলাম: ${missingCols.join(', ')}`, 'error');
+        return;
+      }
+      
+      const stocks = [];
+      
+      // Parse data rows
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        
+        // Simple CSV parser (handles quoted fields)
+        const fields = [];
+        let current = '';
+        let inQuotes = false;
+        
+        for (let j = 0; j < line.length; j++) {
+          const char = line[j];
+          const nextChar = line[j + 1];
+          
+          if (char === '"') {
+            if (inQuotes && nextChar === '"') {
+              current += '"';
+              j++;
+            } else {
+              inQuotes = !inQuotes;
+            }
+          } else if (char === ',' && !inQuotes) {
+            fields.push(current.trim());
+            current = '';
+          } else {
+            current += char;
+          }
+        }
+        fields.push(current.trim());
+        
+        if (fields.length < headers.length) {
+          console.warn(`Row ${i} has insufficient fields, skipping`);
+          continue;
+        }
+        
+        // Map to stock object
+        const stock = {};
+        headers.forEach((header, idx) => {
+          stock[header] = fields[idx] || '';
+        });
+        
+        // Validate and convert
+        const symbol = String(stock.symbol || '').toUpperCase();
+        const name = String(stock.name || symbol);
+        const sector = String(stock.sector || 'অন্যান্য');
+        const price = parseFloat(stock.price) || 100;
+        const change = parseFloat(stock.change) || 0;
+        const turnover = parseFloat(stock.turnover || 0);
+        const volume = parseInt(stock.volume || 0);
+        const high = parseFloat(stock.high || price);
+        const low = parseFloat(stock.low || price);
+        
+        if (!symbol) {
+          console.warn(`Row ${i} has no symbol, skipping`);
+          continue;
+        }
+        
+        stocks.push({
+          symbol,
+          name,
+          sector,
+          price,
+          change,
+          turnover,
+          volume,
+          high,
+          low
+        });
+      }
+      
+      if (stocks.length === 0) {
+        showToast('কোনো সঠিক ডেটা পাওয়া যায়নি', 'error');
+        return;
+      }
+      
+      // Replace market data
+      allStocks = stocks;
+      
+      // Update UI
+      buildTicker();
+      renderOverview();
+      filterMarket();
+      populateSectorFilter();
+      populateSymbolDropdown();
+      
+      showToast(`✓ ${stocks.length}টি স্টক লোড হয়েছে!`);
+      
+      // Reset file input
+      event.target.value = '';
+      
+    } catch (err) {
+      console.error('CSV parse error:', err);
+      showToast('CSV পার্স করতে সমস্যা হয়েছে: ' + err.message, 'error');
+    }
+  };
+  
+  reader.readAsText(file, 'UTF-8');
+}
+
 // Fetch real DSE data - Try multiple sources
 async function fetchRealStockData() {
   // Try Custom API first
@@ -572,13 +701,34 @@ function quickAdd(sym, sec) {
 function populateSymbolDropdown() {
   const sel = document.getElementById('form-symbol');
   sel.innerHTML = '<option value="">সিলেক্ট করুন</option>';
-  allStocks.sort((a,b) => a.symbol.localeCompare(b.symbol)).forEach(s => {
-    const o = document.createElement('option');
-    o.value = s.symbol;
-    o.textContent = `${s.symbol} (${s.sector})`;
-    sel.appendChild(o);
-  });
+  if (allStocks.length === 0) {
+    // If allStocks is empty, add all stocks from SECTORS
+    Object.values(SECTORS).forEach(symbols => {
+      symbols.forEach(sym => {
+        const o = document.createElement('option');
+        o.value = sym;
+        o.textContent = sym;
+        sel.appendChild(o);
+      });
+    });
+  } else {
+    allStocks.sort((a,b) => a.symbol.localeCompare(b.symbol)).forEach(s => {
+      const o = document.createElement('option');
+      o.value = s.symbol;
+      o.textContent = `${s.symbol} (${s.sector})`;
+      sel.appendChild(o);
+    });
+  }
 }
+
+// Call it after allStocks is populated or after a delay
+setTimeout(populateSymbolDropdown, 100);
+setInterval(() => {
+  const sel = document.getElementById('form-symbol');
+  if (sel.children.length <= 1 && allStocks.length > 0) {
+    populateSymbolDropdown();
+  }
+}, 1000);
 populateSymbolDropdown();
 
 // ===== REAL-TIME MARKET TRACKING =====
@@ -624,7 +774,7 @@ function showConfirm(msg, onYes) {
 // ===== DATA SDK =====
 const dataHandler = {
   onDataChanged(data) {
-    portfolioData = data;
+    portfolioData = data.filter(d => !d.market_data_id); // Portfolio items only
     renderPortfolio();
   }
 };
@@ -634,6 +784,54 @@ async function initData() {
   if (!r.isOk) console.error('Data SDK init failed');
 }
 initData();
+
+// Save market data to sheet
+async function saveMarketData() {
+  if (!allStocks.length) return;
+  
+  for (const stock of allStocks) {
+    const existing = portfolioData.find(d => d.market_data_id === stock.symbol);
+    
+    if (!existing) {
+      // Create new market data record
+      await window.dataSdk.create({
+        market_data_id: stock.symbol,
+        stock_symbol: stock.symbol,
+        stock_name: stock.name,
+        sector: stock.sector,
+        price: stock.price,
+        change: stock.change,
+        turnover: stock.turnover,
+        volume: stock.volume,
+        high: stock.high,
+        low: stock.low,
+        buy_price: 0,
+        quantity: 0,
+        buy_date: new Date().toISOString(),
+        notes: 'Market data'
+      });
+    } else {
+      // Update existing market data
+      const updated = {
+        ...existing,
+        price: stock.price,
+        change: stock.change,
+        turnover: stock.turnover,
+        volume: stock.volume,
+        high: stock.high,
+        low: stock.low
+      };
+      await window.dataSdk.update(updated);
+    }
+  }
+}
+
+// Save initial market data when stocks load
+setTimeout(() => {
+  if (allStocks.length > 0) {
+    saveMarketData();
+  }
+}, 1000);
 
 // ===== PORTFOLIO FORM =====
 document.getElementById('add-stock-form').addEventListener('submit', async function(e) {
@@ -709,7 +907,7 @@ function generateReport() {
 
   if (type === 'portfolio') {
     if (!portfolioData.length) { out.innerHTML = '<div class="text-center py-8 text-slate-500">পোর্টফোলিওতে কোনো স্টক নেই</div>'; return; }
-    html = '<h3 class="text-sm font-semibold mb-3">পোর্টফোলিও সামারি রিপোর্ট</h3><table class="w-full text-sm"><thead><tr class="text-xs text-slate-400 border-b border-[#1e3a5f]"><th class="text-left py-2">সিম্বল</th><th class="text-left py-2">সেক্টর</th><th class="text-right py-2">ক্রয় মূল্য</th><th class="text-right py-2">বর্তমান</th><th class="text-right py-2">পরিমাণ</th><th class="text-right py-2">লাভ/ক্ষতি</th><th class="text-right py-2">লাভ/ক্ষতি %</th></tr></thead><tbody>';
+    html = '<h3 class="text-sm font-semibold mb-3">Portfolio Summary Report</h3><table class="w-full text-sm"><thead><tr class="text-xs text-slate-400 border-b border-[#1e3a5f]"><th class="text-left py-2">Symbol</th><th class="text-left py-2">Sector</th><th class="text-right py-2">Buy Price</th><th class="text-right py-2">Current</th><th class="text-right py-2">Quantity</th><th class="text-right py-2">P&L</th><th class="text-right py-2">P&L %</th></tr></thead><tbody>';
     portfolioData.forEach(item => {
       const stock = allStocks.find(s => s.symbol === item.stock_symbol);
       const cur = stock ? stock.price : item.buy_price;
@@ -718,7 +916,7 @@ function generateReport() {
       const pnl = current - invest;
       const pct = invest > 0 ? (pnl/invest*100) : 0;
       const up = pnl >= 0;
-      reportData.push({সিম্বল:item.stock_symbol, সেক্টর:item.sector, 'ক্রয় মূল্য':item.buy_price, 'বর্তমান মূল্য':cur, পরিমাণ:item.quantity, বিনিয়োগ:invest.toFixed(2), 'বর্তমান মূল্যমান':current.toFixed(2), 'লাভ/ক্ষতি':pnl.toFixed(2), 'লাভ/ক্ষতি %':pct.toFixed(2)+'%'});
+      reportData.push({Symbol:item.stock_symbol, Sector:item.sector, 'Buy Price':item.buy_price, 'Current Price':cur, Quantity:item.quantity, Investment:invest.toFixed(2), 'Current Value':current.toFixed(2), 'P&L':pnl.toFixed(2), 'P&L %':pct.toFixed(2)+'%'});
       html += `<tr class="border-b border-[#1e3a5f]/30"><td class="py-2 mono">${item.stock_symbol}</td><td class="py-2 text-slate-400">${item.sector}</td><td class="py-2 text-right mono">${Number(item.buy_price).toFixed(2)}</td><td class="py-2 text-right mono">${cur.toFixed(2)}</td><td class="py-2 text-right mono">${item.quantity}</td><td class="py-2 text-right mono ${up?'text-emerald-400':'text-red-400'}">${pnl.toFixed(2)}</td><td class="py-2 text-right"><span class="${up?'badge-up':'badge-down'}">${pct.toFixed(2)}%</span></td></tr>`;
     });
     html += '</tbody></table>';
@@ -730,11 +928,11 @@ function generateReport() {
       sectorMap[s.sector].turnover += s.turnover;
       sectorMap[s.sector].avgChange += s.change;
     });
-    html = '<h3 class="text-sm font-semibold mb-3">সেক্টর ভিত্তিক রিপোর্ট</h3><table class="w-full text-sm"><thead><tr class="text-xs text-slate-400 border-b border-[#1e3a5f]"><th class="text-left py-2">সেক্টর</th><th class="text-right py-2">কোম্পানি</th><th class="text-right py-2">মোট লেনদেন (কোটি)</th><th class="text-right py-2">গড় পরিবর্তন %</th></tr></thead><tbody>';
+    html = '<h3 class="text-sm font-semibold mb-3">Sector Analysis Report</h3><table class="w-full text-sm"><thead><tr class="text-xs text-slate-400 border-b border-[#1e3a5f]"><th class="text-left py-2">Sector</th><th class="text-right py-2">Companies</th><th class="text-right py-2">Total Turnover (Crore)</th><th class="text-right py-2">Avg Change %</th></tr></thead><tbody>';
     for (const [sec, d] of Object.entries(sectorMap)) {
       d.avgChange /= d.count;
       const up = d.avgChange >= 0;
-      reportData.push({সেক্টর:sec, কোম্পানি:d.count, 'লেনদেন (কোটি)':d.turnover.toFixed(2), 'গড় পরিবর্তন %':d.avgChange.toFixed(2)+'%'});
+      reportData.push({Sector:sec, Companies:d.count, 'Turnover (Crore)':d.turnover.toFixed(2), 'Avg Change %':d.avgChange.toFixed(2)+'%'});
       html += `<tr class="border-b border-[#1e3a5f]/30"><td class="py-2">${sec}</td><td class="py-2 text-right mono">${d.count}</td><td class="py-2 text-right mono">${d.turnover.toFixed(2)}</td><td class="py-2 text-right"><span class="${up?'badge-up':'badge-down'}">${d.avgChange.toFixed(2)}%</span></td></tr>`;
     }
     html += '</tbody></table>';
@@ -750,18 +948,18 @@ function generateReport() {
       return { sym: item.stock_symbol, sector: item.sector, inv, cur: c, pnl: c-inv, pct: inv>0?((c-inv)/inv*100):0 };
     });
     const totalPnl = totalCur - totalInv;
-    html = `<h3 class="text-sm font-semibold mb-3">লাভ/ক্ষতি বিশ্লেষণ</h3><div class="grid grid-cols-3 gap-3 mb-4"><div class="bg-[#0a1628] p-3 rounded-lg"><div class="text-xs text-slate-400">মোট বিনিয়োগ</div><div class="mono text-lg font-bold text-cyan-400">${formatBDT(totalInv)}</div></div><div class="bg-[#0a1628] p-3 rounded-lg"><div class="text-xs text-slate-400">বর্তমান মূল্য</div><div class="mono text-lg font-bold text-emerald-400">${formatBDT(totalCur)}</div></div><div class="bg-[#0a1628] p-3 rounded-lg"><div class="text-xs text-slate-400">নিট লাভ/ক্ষতি</div><div class="mono text-lg font-bold ${totalPnl>=0?'text-emerald-400':'text-red-400'}">${(totalPnl>=0?'+':'')}${formatBDT(totalPnl)}</div></div></div>`;
-    html += '<table class="w-full text-sm"><thead><tr class="text-xs text-slate-400 border-b border-[#1e3a5f]"><th class="text-left py-2">সিম্বল</th><th class="text-right py-2">বিনিয়োগ</th><th class="text-right py-2">বর্তমান</th><th class="text-right py-2">লাভ/ক্ষতি</th></tr></thead><tbody>';
+    html = `<h3 class="text-sm font-semibold mb-3">Profit/Loss Analysis</h3><div class="grid grid-cols-3 gap-3 mb-4"><div class="bg-[#0a1628] p-3 rounded-lg"><div class="text-xs text-slate-400">Total Investment</div><div class="mono text-lg font-bold text-cyan-400">${formatBDT(totalInv)}</div></div><div class="bg-[#0a1628] p-3 rounded-lg"><div class="text-xs text-slate-400">Current Value</div><div class="mono text-lg font-bold text-emerald-400">${formatBDT(totalCur)}</div></div><div class="bg-[#0a1628] p-3 rounded-lg"><div class="text-xs text-slate-400">Net P&L</div><div class="mono text-lg font-bold ${totalPnl>=0?'text-emerald-400':'text-red-400'}">${(totalPnl>=0?'+':'')}${formatBDT(totalPnl)}</div></div></div>`;
+    html += '<table class="w-full text-sm"><thead><tr class="text-xs text-slate-400 border-b border-[#1e3a5f]"><th class="text-left py-2">Symbol</th><th class="text-right py-2">Investment</th><th class="text-right py-2">Current</th><th class="text-right py-2">P&L</th></tr></thead><tbody>';
     items.forEach(i => {
-      reportData.push({সিম্বল:i.sym, সেক্টর:i.sector, বিনিয়োগ:i.inv.toFixed(2), বর্তমান:i.cur.toFixed(2), 'লাভ/ক্ষতি':i.pnl.toFixed(2), '%':i.pct.toFixed(2)+'%'});
+      reportData.push({Symbol:i.sym, Sector:i.sector, Investment:i.inv.toFixed(2), Current:i.cur.toFixed(2), 'P&L':i.pnl.toFixed(2), '%':i.pct.toFixed(2)+'%'});
       html += `<tr class="border-b border-[#1e3a5f]/30"><td class="py-2 mono">${i.sym}</td><td class="py-2 text-right mono">${formatBDT(i.inv)}</td><td class="py-2 text-right mono">${formatBDT(i.cur)}</td><td class="py-2 text-right ${i.pnl>=0?'text-emerald-400':'text-red-400'} mono">${(i.pnl>=0?'+':'')}${formatBDT(i.pnl)}</td></tr>`;
     });
     html += '</tbody></table>';
   } else if (type === 'market') {
-    html = '<h3 class="text-sm font-semibold mb-3">মার্কেট ডেটা রিপোর্ট</h3><table class="w-full text-sm"><thead><tr class="text-xs text-slate-400 border-b border-[#1e3a5f]"><th class="text-left py-2">সিম্বল</th><th class="text-left py-2">সেক্টর</th><th class="text-right py-2">মূল্য</th><th class="text-right py-2">পরিবর্তন %</th><th class="text-right py-2">লেনদেন</th><th class="text-right py-2">ভলিউম</th></tr></thead><tbody>';
+    html = '<h3 class="text-sm font-semibold mb-3">Market Data Report</h3><table class="w-full text-sm"><thead><tr class="text-xs text-slate-400 border-b border-[#1e3a5f]"><th class="text-left py-2">Symbol</th><th class="text-left py-2">Sector</th><th class="text-right py-2">Price</th><th class="text-right py-2">Change %</th><th class="text-right py-2">Turnover</th><th class="text-right py-2">Volume</th></tr></thead><tbody>';
     const sorted = [...allStocks].sort((a,b) => b.turnover - a.turnover);
     sorted.forEach(s => {
-      reportData.push({সিম্বল:s.symbol, সেক্টর:s.sector, মূল্য:s.price.toFixed(2), 'পরিবর্তন %':s.change.toFixed(2)+'%', 'লেনদেন (কোটি)':s.turnover.toFixed(2), ভলিউম:s.volume});
+      reportData.push({Symbol:s.symbol, Sector:s.sector, Price:s.price.toFixed(2), 'Change %':s.change.toFixed(2)+'%', 'Turnover (Crore)':s.turnover.toFixed(2), Volume:s.volume});
       const up = s.change >= 0;
       html += `<tr class="border-b border-[#1e3a5f]/30"><td class="py-2 mono">${s.symbol}</td><td class="py-2 text-slate-400">${s.sector}</td><td class="py-2 text-right mono">${s.price.toFixed(2)}</td><td class="py-2 text-right"><span class="${up?'badge-up':'badge-down'}">${s.change.toFixed(2)}%</span></td><td class="py-2 text-right mono">${s.turnover.toFixed(2)}</td><td class="py-2 text-right mono">${s.volume.toLocaleString()}</td></tr>`;
     });
@@ -792,13 +990,13 @@ function exportCSV() {
     const cur = stock ? stock.price : item.buy_price;
     const inv = item.buy_price * item.quantity;
     const c = cur * item.quantity;
-    return { সিম্বল: item.stock_symbol, সেক্টর: item.sector, 'ক্রয় মূল্য': item.buy_price, 'বর্তমান মূল্য': cur.toFixed(2), পরিমাণ: item.quantity, বিনিয়োগ: inv.toFixed(2), 'বর্তমান মূল্যমান': c.toFixed(2), 'লাভ/ক্ষতি': (c-inv).toFixed(2), 'লাভ/ক্ষতি %': (inv>0?((c-inv)/inv*100).toFixed(2):0)+'%', তারিখ: item.buy_date ? new Date(item.buy_date).toLocaleDateString('bn-BD') : '' };
+    return { Symbol: item.stock_symbol, Sector: item.sector, 'Buy Price': item.buy_price, 'Current Price': cur.toFixed(2), Quantity: item.quantity, Investment: inv.toFixed(2), 'Current Value': c.toFixed(2), 'P&L': (c-inv).toFixed(2), 'P&L %': (inv>0?((c-inv)/inv*100).toFixed(2):0)+'%', Date: item.buy_date ? new Date(item.buy_date).toLocaleDateString('en-US') : '' };
   });
   downloadCSV(data, 'DSE_Portfolio_' + new Date().toISOString().slice(0,10) + '.csv');
 }
 
 function exportMarketCSV() {
-  const data = allStocks.map(s => ({ সিম্বল: s.symbol, সেক্টর: s.sector, মূল্য: s.price.toFixed(2), সর্বোচ্চ: s.high.toFixed(2), সর্বনিম্ন: s.low.toFixed(2), 'পরিবর্তন %': s.change.toFixed(2)+'%', 'লেনদেন (কোটি)': s.turnover.toFixed(2), ভলিউম: s.volume }));
+  const data = allStocks.map(s => ({ Symbol: s.symbol, Sector: s.sector, Price: s.price.toFixed(2), High: s.high.toFixed(2), Low: s.low.toFixed(2), 'Change %': s.change.toFixed(2)+'%', 'Turnover (Crore)': s.turnover.toFixed(2), Volume: s.volume }));
   downloadCSV(data, 'DSE_Market_' + new Date().toISOString().slice(0,10) + '.csv');
 }
 
@@ -818,12 +1016,12 @@ function exportFullReport() {
       const cur = stock ? stock.price : item.buy_price;
       const inv = item.buy_price * item.quantity;
       const c = cur * item.quantity;
-      sheets.push({ রিপোর্ট: 'পোর্টফোলিও', সিম্বল: item.stock_symbol, সেক্টর: item.sector, 'ক্রয় মূল্য': item.buy_price, 'বর্তমান মূল্য': cur.toFixed(2), পরিমাণ: item.quantity, বিনিয়োগ: inv.toFixed(2), 'লাভ/ক্ষতি': (c-inv).toFixed(2) });
+      sheets.push({ Report: 'Portfolio', Symbol: item.stock_symbol, Sector: item.sector, 'Buy Price': item.buy_price, 'Current Price': cur.toFixed(2), Quantity: item.quantity, Investment: inv.toFixed(2), 'P&L': (c-inv).toFixed(2) });
     });
   }
   // Market top 20
   [...allStocks].sort((a,b)=>b.turnover-a.turnover).slice(0,20).forEach(s => {
-    sheets.push({ রিপোর্ট: 'শীর্ষ লেনদেন', সিম্বল: s.symbol, সেক্টর: s.sector, মূল্য: s.price.toFixed(2), 'পরিবর্তন %': s.change.toFixed(2)+'%', 'লেনদেন (কোটি)': s.turnover.toFixed(2) });
+    sheets.push({ Report: 'Top Traders', Symbol: s.symbol, Sector: s.sector, Price: s.price.toFixed(2), 'Change %': s.change.toFixed(2)+'%', 'Turnover (Crore)': s.turnover.toFixed(2) });
   });
   if (!sheets.length) { showToast('রিপোর্টের জন্য ডেটা নেই', 'error'); return; }
   downloadCSV(sheets, 'DSE_Full_Report_' + new Date().toISOString().slice(0,10) + '.csv');
@@ -844,6 +1042,9 @@ function simulateUpdate() {
   if (currentTab === 'market') filterMarket();
   if (currentTab === 'portfolio') renderPortfolio();
   buildTicker();
+  
+  // Auto-save to sheet every update
+  saveMarketData();
 }
 setInterval(simulateUpdate, 5000);
 
@@ -894,5 +1095,5 @@ window.elementSdk.init({
 
 lucide.createIcons();
 </script>
- <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9ef58cf2e4f1b5cb',t:'MTc3NjcwMjgwNS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+ <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9ef5b69ba79db5cb',t:'MTc3NjcwNDUxMi4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
